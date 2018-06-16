@@ -1,6 +1,7 @@
 // @flow weak
 
 import path from 'path'
+import crypto from 'crypto'
 import SingleEntryPlugin from 'webpack/lib/SingleEntryPlugin'
 import minimatch from 'minimatch'
 
@@ -22,6 +23,15 @@ function validatePaths(assets, options) {
 
     return basePath + key
   })
+}
+
+function hash(source, outputOptions) {
+  const hashFunction = outputOptions.hashFunction;
+  const hashDigest = outputOptions.hashDigest;
+  const hashDigestLength = outputOptions.hashDigestLength;
+  const hash = crypto.createHash(hashFunction);
+  hash.update(source);
+  return hash.digest(hashDigest).substr(0, hashDigestLength);
 }
 
 const COMPILER_NAME = 'serviceworker-plugin'
@@ -169,8 +179,11 @@ export default class ServiceWorkerPlugin {
 
     assets = validatePaths(assets, this.options)
 
+    const assetsHash = hash(JSON.stringify(assets), compilation.options.output)
+
     const serviceWorkerOption = this.options.transformOptions({
       assets,
+      assetsHash,
       jsonStats,
     })
 
