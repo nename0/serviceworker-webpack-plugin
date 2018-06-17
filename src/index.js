@@ -3,6 +3,8 @@
 import path from 'path'
 import crypto from 'crypto'
 import SingleEntryPlugin from 'webpack/lib/SingleEntryPlugin'
+import SplitChunksPlugin from 'webpack/lib/optimize/SplitChunksPlugin'
+import JsonpTemplatePlugin from 'webpack/lib/web/JsonpTemplatePlugin'
 import minimatch from 'minimatch'
 
 function validatePaths(assets, options) {
@@ -39,6 +41,7 @@ const COMPILER_NAME = 'serviceworker-plugin'
 export default class ServiceWorkerPlugin {
   options = []
   warnings = []
+  compiledChunkFilenames = []
 
   constructor(options) {
     this.options = Object.assign(
@@ -48,6 +51,7 @@ export default class ServiceWorkerPlugin {
         includes: ['**/*'],
         entry: null,
         filename: 'sw.js',
+        chunksFilename: '[chunkhash].sw.js',
         template: () => Promise.resolve(''),
         transformOptions: serviceWorkerOption => ({
           assets: serviceWorkerOption.assets,
@@ -104,10 +108,33 @@ export default class ServiceWorkerPlugin {
   handleMake(compilation, compiler) {
     const childCompiler = compilation.createChildCompiler(COMPILER_NAME, {
       filename: this.options.filename,
+      chunkFilename: this.options.chunksFilename,
+      globalObject: 'self'
     })
-
-    const childEntryCompiler = new SingleEntryPlugin(compiler.context, this.options.entry)
+    const childEntryCompiler = new SingleEntryPlugin(compiler.context, this.options.entry, "sw-entry")
     childEntryCompiler.apply(childCompiler)
+    // create a vendors chunk
+    new SplitChunksPlugin({
+      maxInitialRequests: 10,
+      cacheGroups: {
+        vendors: {
+            test: /[\\\/]node_modules[\\\/]/,
+            name: "vendors",
+            chunks: "all"
+        }
+    }
+    }).apply(childCompiler);
+    new JsonpTemplatePlugin().apply(childCompiler);
+    childCompiler.hooks.afterCompile.tap('sw-plugin-get-chunkfilenames', (compilation2) => {
+      this.compiledChunkFilenames = compilation2.entrypoints.get("sw-entry").chunks
+        .map((chunk) => chunk.files[0])
+        .filter((filename) => filename !== this.options.filename)
+    });
+    // to make ngTools compile the service worker
+    const ngToolsInstance = compilation._ngToolsWebpackPluginInstance;
+    childCompiler.hooks.thisCompilation.tap('sw-plugin-ng-tools', function (compilation2) {
+      compilation2._ngToolsWebpackPluginInstance = ngToolsInstance;
+    });
 
     // Fix for "Uncaught TypeError: __webpack_require__(...) is not a function"
     // Hot module replacement requires that every child compiler has its own
@@ -196,8 +223,13 @@ export default class ServiceWorkerPlugin {
         this.options.minimize ? 0 : 2
       )
 
+      const importSource = this.compiledChunkFilenames
+        .map((filename) => "importScripts('" + filename + "');") 
+        .join('\r\n')
+
       const source = `
         var serviceWorkerOption = ${serviceWorkerOptionInline};
+        ${importSource}
         ${template}
         ${asset.source()}
       `.trim()
